@@ -19,6 +19,7 @@ lms load text-embedding-qwen3-embedding-4b
 | 2. 자연어 평탄화 | `.venv/bin/python scripts/02_flatten.py` | `data/products_flat.jsonl` |
 | 3. 벡터 변환 | `.venv/bin/python scripts/03_embed.py` | `data/embeddings.npy` (194 × 2560) |
 | 4~5. 평균 벡터 → Top-k | `.venv/bin/python scripts/04_recommend.py` | 터미널 출력 |
+| 평가 (leave-one-out) | `.venv/bin/python scripts/05_evaluate.py` | Hit@k, 카테고리 일치율, 차원별 비교 |
 
 `04_recommend.py` 옵션: `--user home_cook`, `--ids 52,64,53`, `-k 10`, `--dim 256`(MRL 절단)
 
