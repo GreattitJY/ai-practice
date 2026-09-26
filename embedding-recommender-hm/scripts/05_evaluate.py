@@ -55,17 +55,11 @@ def score(recs: np.ndarray, answers: list[set[int]], k: int) -> dict[str, float]
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-k", type=int, default=12)
-    parser.add_argument("--customers", type=int, default=2000)
-    parser.add_argument("--history", type=int, default=20, help="최근 구매 몇 개로 평균을 낼지")
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args()
-
+def eval_set(n_customers: int, history: int, seed: int) -> dict:
+    """평가 고객·구매 목록·정답을 만든다. 06·07 스크립트도 같은 고객으로 비교하려고 함수로 뺐다."""
     n_embedded = len(load_embeddings())
     train, test, cutoff = split(pd.read_parquet(INTERACTIONS), n_embedded)
-    histories = recommender.recent_history(train, n_embedded, args.history)
+    histories = recommender.recent_history(train, n_embedded, history)
     bought_before = train.groupby("customer_idx").product_idx.agg(set)
 
     answers = {}
@@ -74,22 +68,41 @@ def main() -> None:
             new = set(items) - bought_before[c]
             if new:
                 answers[c] = new
-    rng = np.random.default_rng(args.seed)
-    customers = rng.choice(sorted(answers), size=min(args.customers, len(answers)), replace=False)
-    hist = [histories[c] for c in customers]
-    ans = [answers[c] for c in customers]
+    rng = np.random.default_rng(seed)
+    customers = rng.choice(sorted(answers), size=min(n_customers, len(answers)), replace=False)
+    return {
+        "n_embedded": n_embedded, "train": train, "cutoff": cutoff, "eligible": len(answers),
+        "customers": customers,
+        "hist": [histories[c] for c in customers],
+        "ans": [answers[c] for c in customers],
+    }
 
-    print(f"임베딩된 상품 {n_embedded:,}개 / 학습 기간 ~{cutoff.date()} / 정답 기간 이후 {TEST_DAYS}일")
-    print(f"평가 고객 {len(customers):,}명 (조건을 만족한 고객 {len(answers):,}명 중), 고객당 정답 평균 {np.mean([len(a) for a in ans]):.1f}개\n")
 
-    rows = {"인기순 (직전 7일)": score(popularity_recommend(popular_before(train, cutoff), hist, args.k), ans, args.k)}
+def print_table(rows: dict[str, dict[str, float]], k: int) -> None:
+    width = max(len(name) for name in rows) + 4
+    print(f"{'방식':<{width}}{'HitRate@' + str(k):>12}{'Recall@' + str(k):>12}{'Precision@' + str(k):>14}")
+    for name, s in rows.items():
+        print(f"{name:<{width}}{s['HitRate']:>12.4f}{s['Recall']:>12.4f}{s['Precision']:>14.4f}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-k", type=int, default=12)
+    parser.add_argument("--customers", type=int, default=2000)
+    parser.add_argument("--history", type=int, default=20, help="최근 구매 몇 개로 평균을 낼지")
+    parser.add_argument("--seed", type=int, default=42)
+    args = parser.parse_args()
+
+    e = eval_set(args.customers, args.history, args.seed)
+    hist, ans = e["hist"], e["ans"]
+    print(f"임베딩된 상품 {e['n_embedded']:,}개 / 학습 기간 ~{e['cutoff'].date()} / 정답 기간 이후 {TEST_DAYS}일")
+    print(f"평가 고객 {len(hist):,}명 (조건을 만족한 고객 {e['eligible']:,}명 중), 고객당 정답 평균 {np.mean([len(a) for a in ans]):.1f}개\n")
+
+    rows = {"인기순 (직전 7일)": score(popularity_recommend(popular_before(e["train"], e["cutoff"]), hist, args.k), ans, args.k)}
     for dim in DIMS:
         matrix = load_embeddings(dim)
         rows[f"임베딩 {matrix.shape[1]}차원"] = score(recommender.recommend(matrix, hist, args.k), ans, args.k)
-
-    print(f"{'방식':<18}{'HitRate@' + str(args.k):>12}{'Recall@' + str(args.k):>12}{'Precision@' + str(args.k):>14}")
-    for name, s in rows.items():
-        print(f"{name:<18}{s['HitRate']:>12.4f}{s['Recall']:>12.4f}{s['Precision']:>14.4f}")
+    print_table(rows, args.k)
 
 
 if __name__ == "__main__":

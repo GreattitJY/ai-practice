@@ -19,7 +19,8 @@ cd data/raw
 C=h-and-m-personalized-fashion-recommendations
 ../../.venv/bin/kaggle competitions download -c $C -f articles.csv -p .
 ../../.venv/bin/kaggle competitions download -c $C -f transactions_train.csv -p .
-unzip articles.csv.zip && unzip transactions_train.csv.zip && rm *.zip
+../../.venv/bin/kaggle competitions download -c $C -f customers.csv -p .   # 06_customer_query.py에만 필요
+unzip articles.csv.zip && unzip transactions_train.csv.zip && unzip customers.csv.zip && rm *.zip
 cd ../..
 .venv/bin/python -c "import pandas as pd; pd.read_csv('data/raw/transactions_train.csv', dtype={'article_id': str}, usecols=['t_dat','customer_id','article_id'], parse_dates=['t_dat']).to_parquet('data/raw/transactions.parquet')"
 ```
@@ -35,6 +36,7 @@ cd ../..
 | 3. 벡터 변환 | `caffeinate -i .venv/bin/python scripts/03_embed.py --limit 10000` | 판매량 상위부터. 멈춰도 다시 실행하면 이어서 함 |
 | 4~5. 추천 | `.venv/bin/python scripts/04_recommend.py` | 무작위 고객 3명의 추천. `--customer`, `--product`, `--dim` |
 | 평가 | `.venv/bin/python scripts/05_evaluate.py` | 마지막 7일 실제 구매 기준 HitRate·Recall·Precision, 인기순과 비교 |
+| 고객 문장 질의 | `caffeinate -i .venv/bin/python scripts/06_customer_query.py` | 고객을 문장으로 바꿔 질의로 쓰고 지시문 유무·나이 유무 비교. 고객 벡터는 `data/customer_query/`에 저장돼 다시 실행하면 임베딩 없이 평가(`--show 3`: 고객 문장 예시) |
 
 3단계는 LM Studio 로컬 서버가 필요하다: `lms server start`, `lms load text-embedding-qwen3-embedding-4b`.
 M1 Pro 기준 초당 약 3.8건(1만 개 약 45분, 전체 약 3.5시간).
@@ -100,3 +102,45 @@ M1 Pro 기준 초당 약 3.8건(1만 개 약 45분, 전체 약 3.5시간).
 3. **같은 후보(최근 7일 상위 300개) 안에서도 임베딩 순서(0.091)가 인기순 순서(0.141)보다 못했다.** 이 데이터에서는 "산 옷과 비슷한 옷"보다 "지금 많이 팔리는 옷"이 다음 주 구매를 더 잘 맞힌다.
 4. **임베딩은 옷의 종류와 설명만 알고, 언제·얼마나 팔리는지는 모른다.** 상품 벡터를 만들 때 구매 기록을 쓰지 않았기 때문이다(설계 메모 참고). 패션처럼 유행과 계절이 빨리 바뀌는 분야에서 "다음 주 구매 맞히기"에는 불리하다. 반면 "이 상품과 비슷한 상품"은 잘 찾는다(`04_recommend.py --product 0`: 스키니진 → 같은 라인의 스키니진, 유사도 0.96~0.88).
 5. 실제 추천 시스템은 임베딩 하나가 아니라 판매량·최근성·구매 기록 기반 모델 같은 여러 신호를 섞는다.
+
+## 실험 결과: 고객 문장을 질의로 쓰기 (`06_customer_query.py`)
+
+고객 한 명을 문장으로 바꿔 질의로 삼고, 상품 벡터에서 가까운 상품을 찾는다.
+질의(고객 문장)와 문서(상품 문장)의 종류가 달라서, Qwen3 형식대로 질의에만 지시문을 붙인다(3-2강 p5, p15).
+평가 고객·정답은 `05_evaluate.py`와 같다.
+
+고객 문장 예시(정답 기간 이전 정보만 사용):
+
+```
+Instruct: Given an H&M customer's profile and recent purchases, retrieve fashion products the customer is likely to buy next
+Query: H&M customer, age 57. Recent purchases mostly from ladieswear (8), divided (6).
+Often buys trousers (4), bra (2), shirt (2). Latest items: Theron (1) (hoodie); Ragusa Blazer (jacket); ...
+```
+
+- 넣은 것: 나이, 최근 구매 20개의 대상 코너·종류 집계, 가장 최근 구매 5개의 이름
+- 뺀 것: 멤버십 상태·뉴스 수신 여부(취향이 아니라 마케팅 수신 설정)
+- 지시문: 영어 한 문장 18단어(3-2강 p18 권장: 10~20단어, 과제·분야·입력 단위)
+
+| 방식 | HitRate@12 | Recall@12 |
+|---|---|---|
+| 인기순 (직전 7일) | **0.141** | **0.073** |
+| 평균 벡터 (`05_evaluate.py`와 동일) | 0.013 | 0.006 |
+| 고객 문장: `instruct` (지시문 + 나이) | 0.013 | 0.007 |
+| 고객 문장: `plain` (지시문 없음) | 0.014 | 0.008 |
+| 고객 문장: `instruct_noage` (나이 없음) | 0.013 | 0.007 |
+
+맞힌 고객이 2,000명 중 25~28명이라, 임베딩 방식 네 가지 사이의 차이는 우연히 생길 수 있는 범위다.
+
+변형끼리 추천이 실제로 달랐는지:
+
+| 비교 | 고객 벡터 코사인 평균 | 추천 12개 겹침 |
+|---|---|---|
+| 지시문 있음 vs 없음 | 0.830 | 40% |
+| 나이 있음 vs 없음 | 0.988 | 84% |
+
+### 해석
+
+1. **지시문은 추천을 크게 바꿨지만 점수는 바꾸지 못했다.** 추천의 60%가 달라졌는데 맞힌 정도는 같았다. 3-2강 p5의 "지시문으로 1~5% 향상"은 "질문에 답하는 문서 찾기" 같은 검색 과제 기준이고, "다음 주에 살 옷 맞히기"는 모델이 학습 때 본 과제와 거리가 멀다. p18의 "복잡한 요구는 지시문으로 잘 안 된다"는 한계와도 맞는다.
+2. **나이는 거의 영향이 없었다.** 문장 앞의 "age 57" 한 마디는 뒤의 구매 요약에 비해 비중이 작아 벡터가 거의 그대로였다.
+3. **근본 원인은 앞 실험과 같다.** 고객을 문장으로 잘 표현해도, 상품 벡터가 "요즘 무엇이 팔리는지"를 모르는 건 그대로다(설계 메모의 "상품 벡터에는 고객 데이터가 없다" 참고).
+4. 이 방식의 장점은 구매 기록 밖의 정보(나이, 원하는 스타일 등)를 문장에 넣을 수 있다는 점이라, 구매 기록이 적은 고객에게 쓸 여지는 있다. 다만 이번 실험에서 나이는 효과가 없었다.
